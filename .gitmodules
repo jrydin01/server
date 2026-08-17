@@ -1,0 +1,3 @@
+[submodule "music-storage"]
+	path = music-storage
+	url = https://github.com/jmoney136/music-storage
