@@ -8,7 +8,25 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# Metadata library for album art extraction
+try:
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, APIC
+    HAS_MUTAGEN = True
+except ImportError:
+    HAS_MUTAGEN = False
+
 # Configuration from Environment Variables
+def load_env():
+    env_path = os.path.join(os.path.dirname(__file__), "config.env")
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                if "=" in line and not line.startswith("#"):
+                    key, value = line.strip().split("=", 1)
+                    os.environ[key] = value
+
+load_env()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")  # Format: "username/repo"
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
@@ -36,7 +54,6 @@ def github_request(method: str, path: str, data: dict = None):
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
-    # For GET, we don't send a JSON body. For PUT, we do.
     if method == "GET":
         response = requests.get(url, headers=headers)
     else:
@@ -51,24 +68,17 @@ def get_file_sha(path: str):
 
 def load_tracks_from_github() -> List[dict]:
     if not GITHUB_TOKEN or not GITHUB_REPO:
-        print("⚠️ GitHub Token or Repo not configured. Returning empty track list.")
         return []
-    
     response = github_request("GET", "tracks.json")
     if response.status_code == 200:
         content_encoded = response.json()["content"]
         content = base64.b64decode(content_encoded).decode("utf-8")
         return json.loads(content)
-    elif response.status_code == 404:
-        return []
-    else:
-        print(f"❌ Error loading tracks from GitHub: {response.status_code} {response.text}")
-        return []
+    return []
 
 def save_tracks_to_github(tracks: List[dict]):
     content = json.dumps(tracks, indent=4)
     encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-    
     sha = get_file_sha("tracks.json")
     data = {
         "message": "Update tracks metadata",
@@ -77,37 +87,38 @@ def save_tracks_to_github(tracks: List[dict]):
     }
     if sha:
         data["sha"] = sha
-        
     github_request("PUT", "tracks.json", data)
 
 def upload_to_github(file_data: bytes, filename: str, folder: str) -> str:
     path = f"{folder}/{filename}"
     encoded_content = base64.b64encode(file_data).decode("utf-8")
-    
-    # Check if file exists to get SHA (though filenames are unique UUIDs)
-    sha = get_file_sha(path)
-    
     data = {
         "message": f"Upload {filename}",
         "content": encoded_content,
         "branch": GITHUB_BRANCH
     }
-    if sha:
-        data["sha"] = sha
-    
     response = github_request("PUT", path, data)
     if response.status_code in [200, 201]:
         return f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{path}"
     else:
-        raise Exception(f"GitHub Upload Failed: {response.status_code} {response.text}")
+        raise Exception(f"GitHub Upload Failed: {response.status_code}")
+
+def extract_album_art_bytes(file_path):
+    if not HAS_MUTAGEN:
+        return None
+    try:
+        audio = MP3(file_path, ID3=ID3)
+        if audio.tags:
+            for tag in audio.tags.values():
+                if tag.__class__.__name__ == 'APIC':
+                    return tag.data
+    except:
+        pass
+    return None
 
 @app.get("/")
 async def root():
-    return {
-        "status": "GitHub Storage Server Active", 
-        "repo": GITHUB_REPO,
-        "configured": bool(GITHUB_TOKEN and GITHUB_REPO)
-    }
+    return {"status": "Active", "storage": "GitHub", "repo": GITHUB_REPO}
 
 @app.get("/tracks", response_model=List[Track])
 async def get_tracks():
@@ -120,22 +131,34 @@ async def upload_track(
     file: UploadFile = File(...)
 ):
     if not GITHUB_TOKEN or not GITHUB_REPO:
-        raise HTTPException(status_code=500, detail="GitHub Storage not configured on server")
+        raise HTTPException(status_code=500, detail="GitHub not configured")
 
     track_id = str(uuid.uuid4())
     file_ext = os.path.splitext(file.filename)[1]
+    temp_path = f"temp_{track_id}{file_ext}"
     
-    # 1. Upload Music File to GitHub
     file_bytes = await file.read()
+    with open(temp_path, "wb") as f:
+        f.write(file_bytes)
+
+    # 1. Upload Music to GitHub
     audio_url = upload_to_github(file_bytes, f"{track_id}{file_ext}", "music")
     
-    # 2. Add to Metadata and save back to GitHub
+    # 2. Extract and Upload Album Art to GitHub
+    cover_url = ""
+    art_bytes = extract_album_art_bytes(temp_path)
+    if art_bytes:
+        cover_url = upload_to_github(art_bytes, f"{track_id}.jpg", "covers")
+    
+    os.remove(temp_path)
+
+    # 3. Save Metadata
     new_track = {
         "id": track_id,
         "title": title,
         "artist": artist,
         "audioUrl": audio_url,
-        "coverUrl": f"https://picsum.photos/id/{(hash(track_id) % 100) + 100}/400/400"
+        "coverUrl": cover_url
     }
     
     tracks = load_tracks_from_github()
@@ -146,6 +169,5 @@ async def upload_track(
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"🚀 Teen Music Streamer Server starting...")
-    print(f"📦 Backend: GitHub Repository ({GITHUB_REPO})")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
