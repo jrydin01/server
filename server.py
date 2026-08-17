@@ -73,28 +73,42 @@ def github_request(method: str, path: str, data: dict = None):
     repo = (GITHUB_REPO or "").strip()
     
     url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    # 'Bearer' is required for fine-grained Personal Access Tokens
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "TeenMusicStreamer-Server"
+        "User-Agent": "TeenMusicStreamer-App"
     }
     
-    if method == "GET":
-        response = requests.get(url, headers=headers)
-    else:
-        response = requests.request(method, url, headers=headers, json=data)
-    
-    if response.status_code >= 400:
-        print(f"❌ GitHub API Error: {response.status_code}")
-        print(f"Method: {method}, Path: {path}")
-        print(f"Error Details: {response.text}")
+    try:
+        if method == "GET":
+            response = requests.get(url, headers=headers, timeout=10)
+        else:
+            response = requests.request(method, url, headers=headers, json=data, timeout=10)
         
         if response.status_code == 401:
-            print("💡 Hint: This usually means the GITHUB_TOKEN is invalid or expired.")
-        if response.status_code == 403:
-            print("💡 Hint: This usually means your token doesn't have 'Contents: Read/Write' permissions.")
-    
-    return response
+            print(f"❌ GitHub 401: Bad Credentials. Repo: {repo}, Token starts with: {token[:10]}...")
+        
+        return response
+    except Exception as e:
+        print(f"❌ Network error talking to GitHub: {e}")
+        # Create a dummy response object to avoid crashing
+        class DummyResp:
+            status_code = 500
+            text = str(e)
+            def json(self): return {}
+        return DummyResp()
+
+@app.get("/debug-config")
+async def debug_config():
+    """Route to check if Render is actually loading the keys."""
+    token_str = str(GITHUB_TOKEN or "")
+    return {
+        "repo": str(GITHUB_REPO),
+        "token_detected": len(token_str) > 0,
+        "token_length": len(token_str),
+        "token_prefix": token_str[:10]
+    }
 
 def get_file_sha(path: str):
     response = github_request("GET", path)
