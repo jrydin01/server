@@ -32,10 +32,13 @@ def load_env():
 
 load_env()
 
-# Get and clean variables
 def get_clean_env(key, default=None):
     val = os.getenv(key, default)
-    return val.strip().strip('"').strip("'") if val else default
+    if val:
+        # Heavily clean the value to remove spaces, newlines, and quotes
+        # This is critical for Render environment variables
+        return val.strip().replace("\n", "").replace("\r", "").strip('"').strip("'")
+    return default
 
 GITHUB_TOKEN = get_clean_env("GITHUB_TOKEN")
 GITHUB_REPO = get_clean_env("GITHUB_REPO")
@@ -73,10 +76,11 @@ def github_request(method: str, path: str, data: dict = None):
     repo = (GITHUB_REPO or "").strip()
     
     url = f"https://api.github.com/repos/{repo}/contents/{path}"
-    # 'Bearer' is required for fine-grained Personal Access Tokens
+    # Standard headers for GitHub API with Fine-grained tokens
     headers = {
         "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3+json",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "TeenMusicStreamer-App"
     }
     
@@ -88,6 +92,7 @@ def github_request(method: str, path: str, data: dict = None):
         
         if response.status_code == 401:
             print(f"❌ GitHub 401: Bad Credentials. Repo: {repo}, Token starts with: {token[:10]}...")
+            print(f"Response from GitHub: {response.text}")
         
         return response
     except Exception as e:
