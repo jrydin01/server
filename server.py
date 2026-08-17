@@ -50,7 +50,7 @@ class Track(BaseModel):
 
 def github_request(method: str, path: str, data: dict = None):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-    # Using 'Bearer' instead of 'token' which is the modern standard for GitHub API
+    # Fine-grained tokens work best with 'Bearer'
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json",
@@ -62,8 +62,10 @@ def github_request(method: str, path: str, data: dict = None):
         response = requests.request(method, url, headers=headers, json=data)
     
     if response.status_code == 401:
-        print(f"❌ GitHub Authorization Failed (401). Check if your GITHUB_TOKEN is correct and has 'repo' permissions.")
-        print(f"Response: {response.text}")
+        print(f"❌ GitHub Authorization Failed (401).")
+        print(f"Token type: {'Fine-grained' if GITHUB_TOKEN.startswith('github_pat_') else 'Classic'}")
+        print(f"Token (first 10 chars): {GITHUB_TOKEN[:10]}...")
+        print(f"Repo: {GITHUB_REPO}")
     
     return response
 
@@ -137,42 +139,47 @@ async def upload_track(
     artist: str = Form(...),
     file: UploadFile = File(...)
 ):
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        raise HTTPException(status_code=500, detail="GitHub not configured")
+    try:
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            raise HTTPException(status_code=500, detail="GitHub not configured")
 
-    track_id = str(uuid.uuid4())
-    file_ext = os.path.splitext(file.filename)[1]
-    temp_path = f"temp_{track_id}{file_ext}"
-    
-    file_bytes = await file.read()
-    with open(temp_path, "wb") as f:
-        f.write(file_bytes)
+        track_id = str(uuid.uuid4())
+        file_ext = os.path.splitext(file.filename)[1]
+        temp_path = f"temp_{track_id}{file_ext}"
+        
+        file_bytes = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(file_bytes)
 
-    # 1. Upload Music to GitHub
-    audio_url = upload_to_github(file_bytes, f"{track_id}{file_ext}", "music")
-    
-    # 2. Extract and Upload Album Art to GitHub
-    cover_url = ""
-    art_bytes = extract_album_art_bytes(temp_path)
-    if art_bytes:
-        cover_url = upload_to_github(art_bytes, f"{track_id}.jpg", "covers")
-    
-    os.remove(temp_path)
+        # 1. Upload Music to GitHub
+        audio_url = upload_to_github(file_bytes, f"{track_id}{file_ext}", "music")
+        
+        # 2. Extract and Upload Album Art to GitHub
+        cover_url = ""
+        art_bytes = extract_album_art_bytes(temp_path)
+        if art_bytes:
+            cover_url = upload_to_github(art_bytes, f"{track_id}.jpg", "covers")
+        
+        os.remove(temp_path)
 
-    # 3. Save Metadata
-    new_track = {
-        "id": track_id,
-        "title": title,
-        "artist": artist,
-        "audioUrl": audio_url,
-        "coverUrl": cover_url
-    }
-    
-    tracks = load_tracks_from_github()
-    tracks.append(new_track)
-    save_tracks_to_github(tracks)
-    
-    return new_track
+        # 3. Save Metadata
+        new_track = {
+            "id": track_id,
+            "title": title,
+            "artist": artist,
+            "audioUrl": audio_url,
+            "coverUrl": cover_url
+        }
+        
+        tracks = load_tracks_from_github()
+        tracks.append(new_track)
+        save_tracks_to_github(tracks)
+        
+        return new_track
+    except Exception as e:
+        print(f"❌ Upload failed with exception: {e}")
+        # Return a JSON error instead of crashing the server (which causes generic 500)
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
