@@ -18,18 +18,37 @@ except ImportError:
 
 # Configuration from Environment Variables
 def load_env():
+    # Only load from local file if it exists (for local testing)
     env_path = os.path.join(os.path.dirname(__file__), "config.env")
     if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            for line in f:
-                if "=" in line and not line.startswith("#"):
-                    key, value = line.strip().split("=", 1)
-                    os.environ[key] = value
+        try:
+            with open(env_path, "r") as f:
+                for line in f:
+                    if "=" in line and not line.startswith("#"):
+                        key, value = line.strip().split("=", 1)
+                        os.environ[key] = value.strip().strip('"').strip("'")
+        except Exception as e:
+            print(f"⚠️ Error loading config.env: {e}")
 
 load_env()
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")  # Format: "username/repo"
-GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
+
+# Get and clean variables
+def get_clean_env(key, default=None):
+    val = os.getenv(key, default)
+    return val.strip().strip('"').strip("'") if val else default
+
+GITHUB_TOKEN = get_clean_env("GITHUB_TOKEN")
+GITHUB_REPO = get_clean_env("GITHUB_REPO")
+GITHUB_BRANCH = get_clean_env("GITHUB_BRANCH", "main")
+
+# Print diagnostic info (Safe)
+repo_name = str(GITHUB_REPO)
+token_exists = "Yes" if GITHUB_TOKEN else "No"
+token_len = len(str(GITHUB_TOKEN)) if GITHUB_TOKEN else 0
+
+print(f"🔍 Environment Check:")
+print(f"   - GITHUB_REPO: {repo_name}")
+print(f"   - GITHUB_TOKEN present: {token_exists} (Length: {token_len})")
 
 app = FastAPI()
 
@@ -49,23 +68,31 @@ class Track(BaseModel):
     coverUrl: str = ""
 
 def github_request(method: str, path: str, data: dict = None):
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-    # Fine-grained tokens work best with 'Bearer'
+    # Ensure token and repo are clean (no spaces)
+    token = (GITHUB_TOKEN or "").strip()
+    repo = (GITHUB_REPO or "").strip()
+    
+    url = f"https://api.github.com/repos/{repo}/contents/{path}"
     headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "TeenMusicStreamer-Server"
     }
+    
     if method == "GET":
         response = requests.get(url, headers=headers)
     else:
         response = requests.request(method, url, headers=headers, json=data)
     
-    if response.status_code == 401:
-        print(f"❌ GitHub Authorization Failed (401).")
-        print(f"Token type: {'Fine-grained' if GITHUB_TOKEN.startswith('github_pat_') else 'Classic'}")
-        print(f"Token (first 10 chars): {GITHUB_TOKEN[:10]}...")
-        print(f"Repo: {GITHUB_REPO}")
+    if response.status_code >= 400:
+        print(f"❌ GitHub API Error: {response.status_code}")
+        print(f"Method: {method}, Path: {path}")
+        print(f"Error Details: {response.text}")
+        
+        if response.status_code == 401:
+            print("💡 Hint: This usually means the GITHUB_TOKEN is invalid or expired.")
+        if response.status_code == 403:
+            print("💡 Hint: This usually means your token doesn't have 'Contents: Read/Write' permissions.")
     
     return response
 
@@ -183,5 +210,12 @@ async def upload_track(
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Use the port Render assigns, or default to 8000
+    render_port = os.environ.get("PORT", "8000")
+    try:
+        final_port = int(render_port)
+    except:
+        final_port = 8000
+        
+    print(f"🚀 Teen Music Streamer Server starting on port {final_port}...")
+    uvicorn.run(app, host="0.0.0.0", port=final_port)
