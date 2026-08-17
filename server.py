@@ -50,14 +50,21 @@ class Track(BaseModel):
 
 def github_request(method: str, path: str, data: dict = None):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+    # Using 'Bearer' instead of 'token' which is the modern standard for GitHub API
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "TeenMusicStreamer-Server"
     }
     if method == "GET":
         response = requests.get(url, headers=headers)
     else:
         response = requests.request(method, url, headers=headers, json=data)
+    
+    if response.status_code == 401:
+        print(f"❌ GitHub Authorization Failed (401). Check if your GITHUB_TOKEN is correct and has 'repo' permissions.")
+        print(f"Response: {response.text}")
+    
     return response
 
 def get_file_sha(path: str):
