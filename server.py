@@ -144,19 +144,55 @@ def save_tracks_to_github(tracks: List[dict]):
         data["sha"] = sha
     github_request("PUT", "tracks.json", data)
 
+@app.get("/test-github")
+async def test_github():
+    """Diagnostic page to test GitHub connection."""
+    token = (GITHUB_TOKEN or "").strip()
+    repo = (GITHUB_REPO or "").strip()
+    
+    results = {
+        "token_present": len(token) > 0,
+        "repo_configured": repo,
+        "token_type": "Fine-grained" if token.startswith("github_pat_") else "Classic",
+        "tests": []
+    }
+    
+    # Test 1: Can we see the repo?
+    resp = github_request("GET", "")
+    if resp.status_code == 200:
+        results["tests"].append("✅ Successfully reached repository.")
+    else:
+        results["tests"].append(f"❌ Could not reach repo ({resp.status_code}). Reason: {resp.text}")
+        return results
+
+    # Test 2: Can we see tracks.json?
+    resp = github_request("GET", "tracks.json")
+    if resp.status_code == 200:
+        results["tests"].append("✅ tracks.json found.")
+    elif resp.status_code == 404:
+        results["tests"].append("ℹ️ tracks.json not found (Normal for fresh repo).")
+    else:
+        results["tests"].append(f"❌ Error checking tracks.json: {resp.status_code}")
+        
+    return results
+
 def upload_to_github(file_data: bytes, filename: str, folder: str) -> str:
     path = f"{folder}/{filename}"
     encoded_content = base64.b64encode(file_data).decode("utf-8")
+    
     data = {
         "message": f"Upload {filename}",
         "content": encoded_content,
         "branch": GITHUB_BRANCH
     }
+    
     response = github_request("PUT", path, data)
     if response.status_code in [200, 201]:
         return f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{path}"
     else:
-        raise Exception(f"GitHub Upload Failed: {response.status_code}")
+        # Pass the actual GitHub error message through
+        error_msg = response.json().get("message", response.text)
+        raise Exception(f"GitHub Error ({response.status_code}): {error_msg}")
 
 def extract_album_art_bytes(file_path):
     if not HAS_MUTAGEN:
